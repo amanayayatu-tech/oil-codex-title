@@ -21,14 +21,14 @@ Windows 下将示例的 `python3` 换成 `py -3`，需要已安装 Python Launch
 
 1. 执行 `python3 <入口> doctor`，检查 Python、Codex 路径和 App Server。
 2. 用户提供话题时，追加 `--thread <话题 ID>` 验证读取兼容性。
-3. 需要配置时，执行 `configure --model <模型 ID> --service-tier fast` 或 `--service-tier standard`；修正可执行文件使用 `configure --codex-bin <路径>`。模型和档位应来自用户选择或当前可用列表，不猜模型名。默认 Luna Fast，Spark 使用 standard。
+3. 需要配置时，执行 `configure --model <模型 ID> --reasoning-effort <推理等级> --service-tier fast` 或 `--service-tier standard`；修正可执行文件使用 `configure --codex-bin <路径>`。模型、推理等级和档位应来自用户选择或当前可用列表，不猜模型名。未配置时沿用 low 推理等级；Spark 使用 standard。
 4. 安装及信任步骤见插件根目录的 `README.md`。只通过官方插件安装和 Hook 信任入口操作，不修改信任数据库，也不加绕过信任的参数。
 
 Hook 安装、启用、信任和实际成功运行是不同状态。`doctor` 成功不能证明 Hook 已自动触发。
 
 ## 改名与预览
 
-1. 仅在用户明确要求预览或改名时运行 `rename`。先调用官方宿主 `list_threads(limit=50)` 与 `list_projects`，将实际完整 JSON 返回值组成 `{"threads":话题结果,"projects":项目结果}`，用程序经 stdin 传给 `python3 <入口> workspace-context <话题 ID>`。不手工重写，不回显完整列表，不用目录名猜工作区；缺少官方工具或读取失败时报告限制并保留原标题。
+1. 仅在用户明确要求预览或改名时运行 `rename`。先调用官方宿主 `list_threads(limit=50)` 与 `list_projects`，将实际完整 JSON 返回值组成 `{"threads":话题结果,"projects":项目结果}`，用程序经 stdin 传给 `python3 <入口> workspace-context <话题 ID>`。不手工重写，不回显完整列表；项目 ID 为空时仍要从两项官方结果核对完整工作目录与已登记项目路径，不能只凭 ID 为空或目录末级名称断定工作区。缺少官方工具或读取失败时报告限制并保留原标题。
 2. 执行 `python3 <入口> rename <话题 ID>` 生成预览。用户已经要求改名时追加 `--apply`；预览请求停在候选结果。显式命令可处理已冻结话题，但不使后台恢复反复改名。
 3. 读取命令结果；`renamed` 表示标题元数据已写入且读回核验，`kept` 或 `unchanged` 表示保留。它不证明桌面缓存已刷新。
 4. 返回实际标题和状态，不把候选当作已经生效的标题。

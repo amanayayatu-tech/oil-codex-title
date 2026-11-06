@@ -514,6 +514,43 @@ class TitleTests(unittest.TestCase):
         self.assertEqual(proc.returncode, 0)
         self.assertEqual(json.loads(proc.stdout)["service_tier"], "priority")
 
+    def test_configured_reasoning_effort_reaches_model_process(self):
+        from unittest.mock import patch
+        from types import SimpleNamespace
+        from codex_adapter import generate_json, SCHEMA
+        env = os.environ | {"OIL_CODEX_TITLE_DATA": str(self.root)}
+        proc = subprocess.run([sys.executable, str(ROOT / "scripts/oil_codex_title.py"),
+                               "configure", "--model", "gpt-6-luna", "--reasoning-effort", "max"],
+                              capture_output=True, text=True, env=env)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        config = title.load_config(self.root)
+        self.assertEqual(config["reasoning_effort"], "max")
+        def fake_run(args, **kwargs):
+            self.assertEqual(args[args.index("-m") + 1], "gpt-6-luna")
+            self.assertIn('model_reasoning_effort="max"', args)
+            Path(args[args.index("--output-last-message") + 1]).write_text(
+                json.dumps(proposal({})[0]), encoding="utf-8")
+            return SimpleNamespace(returncode=0, stdout="")
+        with patch("codex_adapter.subprocess.run", side_effect=fake_run):
+            generate_json("unused", config, {}, ROOT / "prompts/naming.md", SCHEMA)
+        title.atomic_json(self.root / "config.json", {"reasoning_effort": "unsupported"})
+        with self.assertRaisesRegex(ValueError, "reasoning_effort"):
+            title.load_config(self.root)
+
+    def test_doctor_accepts_host_hook_event_names(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        backend = FakeBackend()
+        backend.call = lambda method, params: {"data": [{"hooks": [
+            {"pluginId": "oil-codex-title@personal", "eventName": event,
+             "enabled": True, "trustStatus": "trusted"}
+            for event in ("userPromptSubmit", "stop")]}]}
+        with patch.object(title, "CodexBackend") as factory, patch.object(title.subprocess, "run") as run:
+            factory.return_value.__enter__.return_value = backend
+            run.return_value = SimpleNamespace(stdout="codex 0.1")
+            result = title.doctor("codex", self.root, self.config)
+        self.assertEqual(result["hook"]["status"], "ready")
+
 
 if __name__ == "__main__":
     unittest.main()

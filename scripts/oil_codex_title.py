@@ -26,6 +26,7 @@ ROOT = Path(__file__).resolve().parents[1]
 DEFAULTS = {
     "enabled": True,
     "model": "gpt-5.6-luna",
+    "reasoning_effort": "low",
     "service_tier": "priority",
     "codex_bin": None,
     "recent_turns": 5,
@@ -135,6 +136,8 @@ def load_config(root):
             raise ValueError(f"{key} 必须在 {lower}～{upper} 之间")
     if not isinstance(config["model"], str) or not config["model"].strip():
         raise ValueError("model 不能为空")
+    if config["reasoning_effort"] not in ("low", "medium", "high", "xhigh", "max"):
+        raise ValueError("reasoning_effort 必须是 low、medium、high、xhigh 或 max")
     if config["service_tier"] not in (None, "priority"):
         raise ValueError("service_tier 必须是 null（标准）或 priority（Fast）")
     return config
@@ -187,8 +190,19 @@ def save_workspace_context(root, thread_id, turn_id, payload):
     if any(row["projectId"] != project_id for row in matches):
         raise ValueError("宿主列表中的项目关联不一致")
     name = None
+    projects = host_json(payload["projects"])
+    if project_id is None:
+        cwd = matches[0].get("cwd")
+        if not isinstance(cwd, str) or not cwd or any(row.get("cwd") != cwd for row in matches):
+            raise ValueError("宿主列表中的工作目录缺失或不一致")
+        by_path = [project for project in projects["projects"]
+                   if project.get("projectKind") == "local" and project.get("hostId") == "local"
+                   and project.get("path") == cwd]
+        if len(by_path) > 1:
+            raise ValueError("工作目录对应多个宿主项目")
+        if by_path:
+            project_id = by_path[0].get("projectId")
     if project_id is not None:
-        projects = host_json(payload["projects"])
         if not isinstance(project_id, str) or not project_id:
             raise ValueError("宿主项目 ID 无效")
         names = [project.get("label") for project in projects["projects"]
@@ -695,9 +709,9 @@ def doctor(binary, root, config, thread_id=None):
             listing = backend.call("hooks/list", {"cwds": [cwd]})
             definitions = [hook for entry in listing.get("data", []) for hook in entry.get("hooks", [])
                            if (hook.get("pluginId") or "").split("@")[0] == "oil-codex-title"]
-            ready_events = {h.get("eventName") for h in definitions
+            ready_events = {(h.get("eventName") or "").casefold() for h in definitions
                             if h.get("enabled") and h.get("trustStatus") in ("trusted", "managed")}
-            ready = {"Stop", "UserPromptSubmit"} <= ready_events
+            ready = {"stop", "userpromptsubmit"} <= ready_events
             output["hook"] = {
                 "status": "ready" if ready else "needs_trust_or_enable" if definitions else "not_loaded",
                 "required_events": ["UserPromptSubmit", "Stop"],
@@ -729,6 +743,7 @@ def main():
     sub.add_parser("resume", help="恢复自动命名")
     p = sub.add_parser("configure", help="配置独立命名模型或兼容的可执行文件")
     p.add_argument("--model")
+    p.add_argument("--reasoning-effort", choices=("low", "medium", "high", "xhigh", "max"))
     p.add_argument("--codex-bin")
     p.add_argument("--service-tier", choices=("standard", "fast"))
     for name in ("rename", "lock", "unlock"):
@@ -783,6 +798,8 @@ def main():
                         changes["service_tier"] = None
                 if args.codex_bin:
                     changes["codex_bin"] = find_codex(args.codex_bin)
+                if args.reasoning_effort:
+                    changes["reasoning_effort"] = args.reasoning_effort
                 if args.service_tier:
                     changes["service_tier"] = "priority" if args.service_tier == "fast" else None
             atomic_json(config_path, changes)

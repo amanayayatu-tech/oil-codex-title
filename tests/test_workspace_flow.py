@@ -73,9 +73,35 @@ class WorkspaceFlowTests(unittest.TestCase):
         self.assertNotIn("/workspace/", saved)
         self.assertNotIn("不应保存的摘要", saved)
 
-    def test_explicit_no_association_uses_local_even_if_cwd_matches_a_project(self):
-        self.save(project_id=None)
+    def test_null_project_id_uses_exact_host_workspace_path(self):
+        self.save(name="elep", project_id=None)
+        self.assertEqual(self.process()["title"], CORE + "（elep）")
+        self.assertEqual(title.read_json(title.workspace_context_path(self.root, ID))["project_id"], "ui-project")
+
+    def test_no_project_id_and_no_exact_path_uses_local(self):
+        payload = host_payload(project_id=None)
+        payload["projects"]["structuredContent"]["projects"][0]["path"] = "/workspace/other"
+        title.save_workspace_context(self.root, ID, TURN, payload)
         self.assertEqual(self.process()["title"], CORE + "（本地项目）")
+
+    def test_ambiguous_exact_path_keeps_original(self):
+        payload = host_payload(project_id=None)
+        duplicate = dict(payload["projects"]["structuredContent"]["projects"][0], projectId="other-project")
+        payload["projects"]["structuredContent"]["projects"].append(duplicate)
+        with self.assertRaisesRegex(ValueError, "多个宿主项目"):
+            title.save_workspace_context(self.root, ID, TURN, payload)
+        self.assertEqual(self.process(Mock(side_effect=AssertionError("不能调用模型")))["status"], "workspace_context_missing")
+
+    def test_explicit_suffix_correction_keeps_first_core_title(self):
+        payload = host_payload(project_id=None)
+        payload["projects"]["structuredContent"]["projects"][0]["path"] = "/workspace/other"
+        title.save_workspace_context(self.root, ID, TURN, payload)
+        self.assertEqual(self.process()["title"], CORE + "（本地项目）")
+        self.save(name="elep", project_id=None)
+        result = self.process(Mock(side_effect=AssertionError("纠正后缀不应重新调用模型")))
+        self.assertEqual(result["status"], "renamed")
+        self.assertEqual(result["title"], CORE + "（elep）")
+        self.assertTrue(title.read_json(title.state_path(self.root, ID))["auto_title_finalized"])
 
     def test_missing_or_inconsistent_host_data_invalidates_prior_context(self):
         for change in ("missing_id", "missing_project", "wrong_host", "failed_read", "bad_json"):

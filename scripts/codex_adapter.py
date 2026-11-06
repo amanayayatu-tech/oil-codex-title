@@ -107,7 +107,7 @@ class CodexBackend:
         threading.Thread(target=self._reader, daemon=True).start()
         try:
             self.call("initialize", {
-                "clientInfo": {"name": "oil-codex-title", "version": "0.2.0-personal.1"},
+                "clientInfo": {"name": "oil-codex-title", "version": "0.2.0-personal.2"},
                 "capabilities": {"experimentalApi": True},
             })
             self._send({"method": "initialized"})
@@ -266,7 +266,7 @@ def generate_json(binary, config, context, policy, output_schema, *, before_mode
             "--skip-git-repo-check", "--sandbox", "read-only", "-C", tmp,
             "--disable", "hooks", "--disable", "shell_tool",
             "--disable", "plugins", "--disable", "apps", "--disable", "multi_agent",
-            "-m", config["model"], "-c", 'model_reasoning_effort="low"',
+            "-m", config["model"], "-c", "model_reasoning_effort=" + json.dumps(config.get("reasoning_effort", "low")),
             "-c", "project_doc_max_bytes=0", "-c", "skills.max_context_tokens=1",
             "-c", "agents.enabled=false", "-c", 'web_search="disabled"',
             "-c", "apps._default.enabled=false",
