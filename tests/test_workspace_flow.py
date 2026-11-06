@@ -226,11 +226,11 @@ class WorkspaceFlowTests(unittest.TestCase):
         title.atomic_json(self.root / "config.json", {"codex_bin": "/not-a-real-codex"})
         cmd = [sys.executable, str(ROOT / "scripts/oil_codex_title.py")]
         prepared = subprocess.run(cmd + ["workspace-context", ID, "--turn", TURN],
-            input=json.dumps(host_payload()), text=True, capture_output=True, env=env, check=True)
+            input=json.dumps(host_payload()), encoding="utf-8", capture_output=True, env=env, check=True)
         self.assertEqual(json.loads(prepared.stdout)["status"], "workspace_saved")
         event = {"hook_event_name": "UserPromptSubmit", "session_id": ID, "turn_id": TURN,
                  "prompt": "不应复制到钩子输出的私密正文"}
-        requested = subprocess.run(cmd + ["workspace-request"], input=json.dumps(event), text=True,
+        requested = subprocess.run(cmd + ["workspace-request"], input=json.dumps(event), encoding="utf-8",
                                    capture_output=True, env=env, check=True)
         context = json.loads(requested.stdout)["hookSpecificOutput"]["additionalContext"]
         self.assertIn("list_threads", context)
@@ -239,7 +239,7 @@ class WorkspaceFlowTests(unittest.TestCase):
         title.atomic_json(title.state_path(self.root, ID), {"last_generated_title": CORE})
         for command, hook_event in (("workspace-request", "UserPromptSubmit"), ("hook", "Stop")):
             event["hook_event_name"] = hook_event
-            frozen = subprocess.run(cmd + [command], input=json.dumps(event), text=True,
+            frozen = subprocess.run(cmd + [command], input=json.dumps(event), encoding="utf-8",
                                     capture_output=True, env=env, check=True)
             self.assertEqual(frozen.stdout, "{}\n")
         self.assertFalse((self.root / "usage").exists())
