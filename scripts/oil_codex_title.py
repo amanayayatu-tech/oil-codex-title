@@ -807,8 +807,11 @@ def main():
                             raise BackendError("该话题正在命名，稍后再试")
                         path = state_path(root, thread_id)
                         state = read_json(path)
+                        current = backend.read(thread_id).get("name") or ""
+                        if auto_title_finalized(state) or state.get("pending_title") == current:
+                            state["auto_title_finalized"] = True
                         state.update(locked=args.command == "lock", lock_reason="用户设置",
-                                     last_seen_title=backend.read(thread_id).get("name") or "")
+                                     last_seen_title=current)
                         state.pop("last_fingerprint", None)
                         state.pop("pending_title", None)
                         atomic_json(path, state)

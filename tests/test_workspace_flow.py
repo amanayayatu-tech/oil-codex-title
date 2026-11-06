@@ -1,5 +1,7 @@
 """用实际入口验证工作区转交、首次命名冻结和既有保护；不调用模型。"""
 import copy
+from contextlib import redirect_stdout
+import io
 import json
 import os
 from pathlib import Path
@@ -163,6 +165,27 @@ class WorkspaceFlowTests(unittest.TestCase):
         self.append()
         self.assertEqual(self.process(lambda _: self.fail(), automatic=True)["status"], "frozen")
         self.assertEqual(self.backend.thread["name"], "我手动选择的名字")
+
+    def test_public_lock_unlock_preserves_finalization_and_confirms_pending_write(self):
+        current = "旧版保留的准确名称"
+        cases = (({"last_fingerprint": "legacy", "last_seen_title": current}, True),
+                 ({"pending_title": current}, True),
+                 ({"pending_title": "尚未实际写入的名字"}, False), ({}, False))
+        for saved, finalized in cases:
+            with self.subTest(saved=saved):
+                title.atomic_json(title.state_path(self.root, ID), saved)
+                backend = Mock()
+                backend.__enter__ = Mock(return_value=backend)
+                backend.__exit__ = Mock(return_value=False)
+                backend.read.return_value = {"name": current}
+                with patch.dict(os.environ, {"OIL_CODEX_TITLE_DATA": str(self.root)}), \
+                     patch.object(title, "find_codex", return_value="/unused"), \
+                     patch.object(title, "CodexBackend", return_value=backend):
+                    for command in ("lock", "unlock"):
+                        with patch.object(sys, "argv", ["title", command, ID]), redirect_stdout(io.StringIO()):
+                            self.assertEqual(title.main(), 0)
+                        self.assertEqual(title.auto_title_finalized(title.read_json(
+                            title.state_path(self.root, ID))), finalized)
 
     def test_explicit_rename_still_works_after_finalization(self):
         self.save()
