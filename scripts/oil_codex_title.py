@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""话题自动命名入口；Hook 始终只向宿主返回空 JSON。"""
+"""首次定名后冻结；主代理准备工作区元数据，Stop Hook 独立生成标题。"""
 from __future__ import annotations
 
 import argparse
@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -16,7 +17,8 @@ import time
 import unicodedata
 import uuid
 
-from codex_adapter import BackendError, ModelSkipped, CodexBackend, find_codex, generate_title, process_options
+from codex_adapter import (EMOJI, BackendError, ModelSkipped, CodexBackend, find_codex,
+                           generate_title, has_naming_goal, process_options)
 import file_lock
 from usage_ledger import usage_scope, usage_report
 
@@ -31,8 +33,65 @@ DEFAULTS = {
     "model_timeout_seconds": 100,
     "max_parallel_workers": 2,
 }
-EMOJI = ("🎬", "🧩", "🔎", "📝", "📅", "🎨", "⚙️", "💬")
-POLICY_VERSION = 8
+POLICY_VERSION = 9
+WORKSPACE_NAME_WIDTH = 10
+WORKSPACE_CONTEXT_MAX_AGE = 300
+
+
+def workspace_suffix(workspace_name):
+    """为已核验的工作区名或明确未关联状态生成显示后缀。"""
+    if workspace_name is None:
+        return "（本地项目）"
+    if not isinstance(workspace_name, str):
+        raise TypeError("workspace_name 必须是字符串或 None")
+    if not workspace_name.strip():
+        raise ValueError("workspace_name 不能为空")
+    if any(unicodedata.category(char) in ("Cc", "Cs") for char in workspace_name):
+        raise ValueError("workspace_name 含控制字符")
+
+    width = 0
+    prefix = []
+    truncated = False
+    # shortcut: ZWJ 组合 emoji 按码点累计宽度，需要按完整字形截断时再升级。
+    for char in workspace_name:
+        category = unicodedata.category(char)
+        char_width = 0 if category.startswith("M") or category == "Cf" else (
+            2 if unicodedata.east_asian_width(char) in ("F", "W") else 1
+        )
+        if width + char_width > WORKSPACE_NAME_WIDTH:
+            truncated = True
+            break
+        prefix.append(char)
+        width += char_width
+    label = "".join(prefix) + ("..." if truncated else "")
+    return f"（{label}）"
+
+
+def strip_workspace_suffix(title, *suffixes):
+    for suffix in suffixes:
+        if suffix and title.endswith(suffix):
+            return title[:-len(suffix)]
+    return title
+
+
+def format_workspace_title(title, workspace_name, previous_suffix=""):
+    """只替换末尾已知的工作区后缀，保留核心标题。"""
+    if not isinstance(title, str):
+        raise TypeError("title 必须是字符串")
+    if not title:
+        raise ValueError("title 不能为空")
+    suffix = workspace_suffix(workspace_name)
+    if previous_suffix == "":
+        previous_suffix = None
+    elif previous_suffix is None:
+        previous_suffix = workspace_suffix(None)
+    elif not isinstance(previous_suffix, str):
+        raise TypeError("previous_suffix 必须是字符串、None 或空字符串")
+    elif (not previous_suffix.startswith("（") or not previous_suffix.endswith("）")
+          or len(previous_suffix) <= 2):
+        raise ValueError("previous_suffix 必须是已记录的非空括号后缀")
+
+    return strip_workspace_suffix(title, suffix, previous_suffix) + suffix
 
 
 def data_dir():
@@ -83,6 +142,111 @@ def load_config(root):
 
 def valid_id(value):
     return str(uuid.UUID(value))
+
+
+def workspace_context_path(root, thread_id):
+    return root / "workspaces" / (valid_id(thread_id) + ".json")
+
+
+def host_json(value):
+    if not isinstance(value, dict) or value.get("isError"):
+        raise ValueError("宿主元数据读取失败")
+    if "structuredContent" in value:
+        value = value["structuredContent"]
+    elif "content" in value:
+        texts = [part.get("text", "") for part in value["content"] if part.get("type") == "text"]
+        if len(texts) != 1:
+            raise ValueError("宿主元数据 JSON 不完整")
+        value = json.loads(texts[0])
+    if not isinstance(value, dict):
+        raise ValueError("宿主元数据必须是 JSON 对象")
+    return value
+
+
+def save_workspace_context(root, thread_id, turn_id, payload):
+    """从实际宿主结果关联项目；不持久化其他话题、路径或对话摘要。"""
+    thread_id, turn_id = valid_id(thread_id), valid_id(turn_id)
+    path = workspace_context_path(root, thread_id)
+    record = {"thread_id": thread_id, "turn_id": turn_id, "status": "unavailable"}
+    atomic_json(path, record)
+    if isinstance(payload, str):
+        payload = json.loads(payload)
+    listing = host_json(payload["threads"])
+    for host in listing.get("unavailableHosts", []):
+        if host == "local" or isinstance(host, dict) and host.get("hostId") == "local":
+            raise ValueError("本地宿主不可用")
+    for source in listing.get("unavailableSources", []):
+        if source == "codex" or isinstance(source, dict) and source.get("source") == "codex":
+            raise ValueError("Codex 话题来源不可用")
+    rows = listing.get("threads", []) + listing.get("pinnedThreads", [])
+    matches = [row for row in rows if row.get("id") == thread_id
+               and row.get("kind") == "codex" and row.get("hostId") == "local"]
+    if not matches or any("projectId" not in row for row in matches):
+        raise ValueError("宿主列表没有当前话题的完整项目关联")
+    project_id = matches[0]["projectId"]
+    if any(row["projectId"] != project_id for row in matches):
+        raise ValueError("宿主列表中的项目关联不一致")
+    name = None
+    if project_id is not None:
+        projects = host_json(payload["projects"])
+        if not isinstance(project_id, str) or not project_id:
+            raise ValueError("宿主项目 ID 无效")
+        names = [project.get("label") for project in projects["projects"]
+                 if project.get("projectId") == project_id and project.get("projectKind") == "local"
+                 and project.get("hostId") == "local"]
+        if not names or any(label != names[0] for label in names):
+            raise ValueError("宿主项目名称缺失或不一致")
+        name = names[0]
+        if not isinstance(name, str):
+            raise ValueError("宿主项目名称无效")
+    suffix = workspace_suffix(name)
+    record.update(status="ready", source="codex_app", project_id=project_id,
+                  workspace_name=name, verified_at=time.time())
+    atomic_json(path, record)
+    return {"status": "workspace_saved", "workspace_name": name, "workspace_suffix": suffix}
+
+
+def read_workspace_context(root, thread_id, thread):
+    try:
+        record = read_json(workspace_context_path(root, thread_id))
+        latest_id = thread.get("turns", [{}])[-1].get("id") if thread.get("turns") else None
+        if (record.get("status") != "ready" or record.get("source") != "codex_app"
+                or record.get("thread_id") != thread_id or record.get("turn_id") != latest_id):
+            raise ModelSkipped("workspace_context_missing")
+        age = time.time() - record["verified_at"]
+        if not 0 <= age <= WORKSPACE_CONTEXT_MAX_AGE:
+            raise ModelSkipped("workspace_context_stale")
+        project_id, name = record["project_id"], record["workspace_name"]
+        if ((project_id is None) != (name is None)
+                or project_id is not None and (not isinstance(project_id, str) or not project_id)):
+            raise ValueError("工作区上下文关联无效")
+        suffix = workspace_suffix(name)
+        signature = hashlib.sha256(json.dumps([project_id, name], ensure_ascii=False).encode()).hexdigest()
+        return {"name": name, "suffix": suffix, "signature": signature}
+    except (KeyError, TypeError, ValueError, OSError) as exc:
+        raise ModelSkipped("workspace_context_invalid") from exc
+
+
+def workspace_request(event, root, config):
+    if (not config["enabled"] or os.environ.get("OIL_CODEX_TITLE_WORKER") == "1"
+            or event.get("hook_event_name") != "UserPromptSubmit"):
+        return {}
+    thread_id, turn_id = valid_id(event["session_id"]), valid_id(event["turn_id"])
+    state = read_json(state_path(root, thread_id))
+    if state.get("locked") or auto_title_finalized(state):
+        return {}
+    argv = [sys.executable, str(ROOT / "scripts/oil_codex_title.py"), "workspace-context", thread_id,
+            "--turn", turn_id]
+    command = subprocess.list2cmdline(argv) if sys.platform == "win32" else shlex.join(argv)
+    context = (
+        "oil-codex-title 需要本轮的侧栏工作区元数据。请在完成主要工作、最终答复之前："
+        f"调用宿主 list_threads(limit=50) 与 list_projects，取得话题 {thread_id} 的真实关联；"
+        "将两次工具的实际完整 JSON 返回值组成 {\"threads\":话题结果,\"projects\":项目结果}，"
+        f"通过 stdin 原样传给命令：{command}。用程序直接转交 JSON，不手工重写、不回显完整列表。"
+        "读取失败时也传入实际错误结果，使本轮工作区上下文失效；不能用目录名猜工作区。"
+        "该步骤只准备元数据，不调用命名模型、不改标题、不向其他话题发送消息。"
+    )
+    return {"hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": context}}
 
 
 @contextmanager
@@ -267,15 +431,20 @@ def snapshot(thread, config):
             "context": context, "has_messages": bool(effective), "scope_key": scope_key}
 
 
-def validate_candidate(candidate, current_title):
+def validate_candidate(candidate, current_title, *, workspace=None, previous_suffix=""):
     if not isinstance(candidate, dict) or set(candidate) != {"action", "title", "reason"}:
         raise ValueError("模型输出字段无效")
     if candidate["action"] not in ("rename", "keep") or not all(
         isinstance(candidate[k], str) for k in ("title", "reason")
     ):
         raise ValueError("模型输出类型无效")
+    core_title = current_title
+    if workspace is not None:
+        suffix = workspace["suffix"]
+        core_title = strip_workspace_suffix(current_title, suffix, previous_suffix)
+        candidate = {**candidate, "title": strip_workspace_suffix(candidate["title"], suffix, previous_suffix)}
     if candidate["action"] == "keep":
-        candidate = {**candidate, "title": current_title}
+        candidate = {**candidate, "title": core_title}
     else:
         title = candidate["title"]
         if title != title.strip() or not 4 <= len(title) <= 48:
@@ -296,14 +465,27 @@ def validate_candidate(candidate, current_title):
             raise ValueError("标题含 Windows 绝对路径")
         if any(x in title for x in ("\n", "\r", "`", "https://", "http://", "@", "/Users/", "sk-")):
             raise ValueError("标题含不允许的格式或私人信息")
+    if workspace is not None:
+        full_title = format_workspace_title(candidate["title"], workspace["name"], previous_suffix)
+        reason = candidate["reason"]
+        if candidate["action"] == "keep" and full_title != current_title:
+            reason = "保留核心标题，更新工作区后缀"
+        candidate = {**candidate, "title": full_title,
+                     "action": "keep" if full_title == current_title else "rename", "reason": reason}
     return {**candidate, "reason": candidate["reason"][:300]}
+
+
+def auto_title_finalized(state):
+    """旧版成功命名或保留的记录也冻结，不因格式或规则升级重新评估。"""
+    return bool(state.get("auto_title_finalized") or state.get("last_generated_title")
+                or state.get("last_fingerprint"))
 
 
 def confirmation_only(thread, state, config):
     """仅在基线仍一致时跳过最多两轮纯确认；附件、遗漏轮次或规则升级均重新判断。"""
     if state.get("policy_version") != POLICY_VERSION or not state.get("last_fingerprint"):
         return 0
-    current = thread.get("name") or ""
+    current = strip_workspace_suffix(thread.get("name") or "", state.get("workspace_suffix", ""))
     try:
         validate_candidate({"action": "rename", "title": current, "reason": ""}, current)
     except ValueError:
@@ -335,14 +517,17 @@ def confirmation_only(thread, state, config):
     return len(pending)
 
 
-def process_thread(backend, generator, thread_id, root, config, *, apply=False, event_turn=None):
+def process_thread(backend, generator, thread_id, root, config, *, apply=False, event_turn=None,
+                   workspace_reader=None):
     with usage_scope(root, "naming", thread_id) as accounting:
-        result = _process_thread(backend, generator, thread_id, root, config, apply=apply, event_turn=event_turn)
+        result = _process_thread(backend, generator, thread_id, root, config, apply=apply,
+                                 event_turn=event_turn, workspace_reader=workspace_reader)
         accounting.outcome = result["status"]
         return result
 
 
-def _process_thread(backend, generator, thread_id, root, config, *, apply=False, event_turn=None):
+def _process_thread(backend, generator, thread_id, root, config, *, apply=False, event_turn=None,
+                    workspace_reader=None):
     thread_id = valid_id(thread_id)
     if not config["enabled"]:
         return {"status": "disabled"}
@@ -352,6 +537,8 @@ def _process_thread(backend, generator, thread_id, root, config, *, apply=False,
             return {"status": "busy"}
         path = state_path(root, thread_id)
         state = read_json(path)
+        if event_turn and auto_title_finalized(state):
+            return {"status": "frozen"}
         if backend.is_archived(thread_id):
             return {"status": "archived"}
         if event_turn:
@@ -363,12 +550,16 @@ def _process_thread(backend, generator, thread_id, root, config, *, apply=False,
         before = snapshot(thread, config)
         if not before["has_messages"]:
             return {"status": "empty"}
+        if event_turn and not has_naming_goal(before["context"]):
+            return {"status": "awaiting_title", "title": before["title"]}
         # 上次写入后进程被中断时，先核对待确认结果，避免误认作手工改名。
         if state.get("pending_title") == before["title"]:
             state.update(last_seen_title=before["title"], last_generated_title=before["title"])
             state.pop("pending_title", None)
             if apply:
                 atomic_json(path, state)
+            if event_turn and auto_title_finalized(state):
+                return {"status": "frozen", "title": before["title"]}
         # 初次观察到的标题可能仍是宿主的临时标题。只有成功评估/写入后，
         # 才有稳定基线可用于保护外部改名；过期结果不能建立这条基线。
         established = bool(state.get("last_fingerprint") or state.get("last_generated_title"))
@@ -385,18 +576,37 @@ def _process_thread(backend, generator, thread_id, root, config, *, apply=False,
                 state.update(locked=True, lock_reason="检测到外部改名", last_seen_title=before["title"])
                 atomic_json(path, state)
             return {"status": "manual_title", "title": before["title"]}
-        if state.get("last_fingerprint") == before["fingerprint"]:
+        workspace = None
+        try:
+            if workspace_reader is not None:
+                workspace = workspace_reader(thread)
+        except ModelSkipped as exc:
+            return {"status": exc.status, "title": before["title"]}
+        if workspace is not None:
+            before["context"]["current_title"] = strip_workspace_suffix(
+                before["title"], workspace["suffix"], state.get("workspace_suffix", ""))
+        same_content = state.get("last_fingerprint") == before["fingerprint"]
+        same_workspace = workspace is None or state.get("workspace_signature") == workspace["signature"]
+        if same_content and same_workspace:
             return {"status": "unchanged", "title": before["title"]}
         skipped = confirmation_only(thread, state, config)
         try:
             ensure_title_active(backend, thread_id, root)
-            if skipped:
-                candidate, usage = {"action": "keep", "title": before["title"], "reason": "新增内容仅为确认，保留稳定标题"}, {}
+            if skipped or same_content:
+                candidate, usage = {"action": "keep", "title": before["context"]["current_title"],
+                                    "reason": "新增内容仅为确认或工作区变化，保留稳定标题"}, {}
             else:
                 candidate, usage = generator(before["context"])
         except ModelSkipped as exc:
             return {"status": exc.status}
-        candidate = validate_candidate(candidate, before["title"])
+        if event_turn and candidate["action"] == "keep":
+            try:
+                validate_candidate({"action": "rename", "title": before["context"]["current_title"],
+                                    "reason": ""}, before["context"]["current_title"])
+            except ValueError:
+                return {"status": "awaiting_title", "title": before["title"], "usage": usage}
+        candidate = validate_candidate(candidate, before["title"], workspace=workspace,
+                                       previous_suffix=state.get("workspace_suffix", ""))
         conflicts = conflicting_titles(root, thread_id, candidate["title"], before["scope_key"])
         if candidate["action"] == "rename" and conflicts:
             try:
@@ -405,7 +615,8 @@ def _process_thread(backend, generator, thread_id, root, config, *, apply=False,
                     "naming_feedback": "候选与已记录任务重名。用对话里真实的项目、模块或内容主题区分；无法区分就保留原名，不编造编号。"})
             except ModelSkipped as exc:
                 return {"status": exc.status, "usage": usage}
-            candidate = validate_candidate(candidate, before["title"])
+            candidate = validate_candidate(candidate, before["title"], workspace=workspace,
+                                           previous_suffix=state.get("workspace_suffix", ""))
             usage = {key: usage.get(key, 0) + retry_usage.get(key, 0)
                      for key in usage.keys() | retry_usage.keys()}
             if candidate["action"] == "rename" and conflicting_titles(root, thread_id, candidate["title"], before["scope_key"]):
@@ -424,13 +635,23 @@ def _process_thread(backend, generator, thread_id, root, config, *, apply=False,
             return {"status": "locked"}
         if backend.is_archived(thread_id):
             return {"status": "archived"}
-        after = snapshot(backend.read(thread_id), config)
+        after_thread = backend.read(thread_id)
+        after = snapshot(after_thread, config)
         if after["title"] != before["title"] or after["fingerprint"] != before["fingerprint"]:
             return {"status": "stale_result"}
+        if workspace_reader is not None:
+            try:
+                fresh_workspace = workspace_reader(after_thread)
+            except ModelSkipped as exc:
+                return {"status": exc.status, "usage": usage}
+            if fresh_workspace["signature"] != workspace["signature"]:
+                return {"status": "stale_result", "usage": usage}
         state.update(last_seen_title=before["title"], last_turn_id=before["latest_id"],
                      scope_key=before["scope_key"], updated_at=int(time.time()),
                      policy_version=POLICY_VERSION,
                      confirmation_skips=state.get("confirmation_skips", 0) + skipped if skipped else 0)
+        if workspace is not None:
+            state.update(workspace_suffix=workspace["suffix"], workspace_signature=workspace["signature"])
         if candidate["action"] == "rename" and candidate["title"] != before["title"]:
             state["pending_title"] = candidate["title"]
             atomic_json(path, state)
@@ -450,6 +671,8 @@ def _process_thread(backend, generator, thread_id, root, config, *, apply=False,
         else:
             result["status"] = "kept"
         state["last_fingerprint"] = before["fingerprint"]
+        if auto_title_finalized(state):
+            state["auto_title_finalized"] = True
         atomic_json(path, state)
         audit(root, thread_id, result)
         return result
@@ -472,10 +695,12 @@ def doctor(binary, root, config, thread_id=None):
             listing = backend.call("hooks/list", {"cwds": [cwd]})
             definitions = [hook for entry in listing.get("data", []) for hook in entry.get("hooks", [])
                            if (hook.get("pluginId") or "").split("@")[0] == "oil-codex-title"]
-            ready = any(h.get("enabled") and h.get("trustStatus") in ("trusted", "managed")
-                        for h in definitions)
+            ready_events = {h.get("eventName") for h in definitions
+                            if h.get("enabled") and h.get("trustStatus") in ("trusted", "managed")}
+            ready = {"Stop", "UserPromptSubmit"} <= ready_events
             output["hook"] = {
                 "status": "ready" if ready else "needs_trust_or_enable" if definitions else "not_loaded",
+                "required_events": ["UserPromptSubmit", "Stop"],
                 "definitions": [{k: h.get(k) for k in ("eventName", "enabled", "trustStatus", "sourcePath")}
                                 for h in definitions],
             }
@@ -492,6 +717,10 @@ def main():
     parser = argparse.ArgumentParser(description="独立模型驱动的 Codex 话题命名")
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("hook", help="读取 Stop Hook stdin；保持宿主输出为空 JSON")
+    sub.add_parser("workspace-request", help="提示主代理准备首次命名所需的工作区元数据")
+    p = sub.add_parser("workspace-context", help="从 stdin 接收实际宿主 JSON，保存当前话题工作区")
+    p.add_argument("thread_id")
+    p.add_argument("--turn", help="当前轮次 ID；未提供时通过官方接口读取最新轮次")
     p = sub.add_parser("doctor", help="只读检查运行环境")
     p.add_argument("--thread")
     sub.add_parser("status", help="显示配置和本地记录数量")
@@ -509,7 +738,8 @@ def main():
             p.add_argument("--apply", action="store_true", help="写入；省略时只预览")
     args = parser.parse_args()
     root = data_dir()
-    is_hook = args.command == "hook"
+    is_hook = args.command in ("hook", "workspace-request")
+    hook_output = {}
     thread_id = None
     try:
         if sys.version_info < (3, 10):
@@ -519,10 +749,27 @@ def main():
             if os.environ.get("OIL_CODEX_TITLE_WORKER") == "1" or not config["enabled"]:
                 return 0
             event = json.loads(sys.stdin.read(1024 * 1024))
+            if args.command == "workspace-request":
+                hook_output = workspace_request(event, root, config)
+                return 0
             if event.get("hook_event_name") != "Stop" or event.get("stop_hook_active"):
                 return 0
             thread_id = valid_id(event["session_id"])
             turn_id = valid_id(event["turn_id"])
+            if auto_title_finalized(read_json(state_path(root, thread_id))):
+                return 0
+        if args.command == "workspace-context":
+            thread_id = valid_id(args.thread_id)
+            turn_id = args.turn
+            if turn_id is None:
+                with CodexBackend(find_codex(config["codex_bin"])) as backend:
+                    turns = backend.read(thread_id).get("turns", [])
+                if not turns:
+                    raise BackendError("话题尚无可命名轮次")
+                turn_id = turns[-1]["id"]
+            result = save_workspace_context(root, thread_id, turn_id, sys.stdin.read(8 * 1024 * 1024))
+            print(json.dumps(result, ensure_ascii=False))
+            return 0
         if args.command in ("pause", "resume", "configure"):
             config_path = root / "config.json"
             changes = read_json(config_path)
@@ -572,6 +819,7 @@ def main():
                             before_model=lambda: ensure_title_active(backend, thread_id, root)),
                         thread_id, root, config, apply=is_hook or args.apply,
                         event_turn=turn_id if is_hook else None,
+                        workspace_reader=lambda thread: read_workspace_context(root, thread_id, thread),
                     )
                     if is_hook and result["status"] not in ("renamed", "kept"):
                         audit(root, thread_id, result)
@@ -591,7 +839,7 @@ def main():
         return 1
     finally:
         if is_hook:
-            print("{}")
+            print(json.dumps(hook_output, ensure_ascii=False))
 
 
 if __name__ == "__main__":

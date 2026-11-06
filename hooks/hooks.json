@@ -1,6 +1,18 @@
 {
-  "description": "在后台用独立模型检查话题标题，只更新标题元数据。",
+  "description": "首次命名前准备工作区元数据，后台定名成功后永久停止自动改名。",
   "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${PLUGIN_ROOT}/scripts/oil_codex_title.py\" workspace-request",
+            "timeout": 10,
+            "commandWindows": "py -3 -X utf8 \"${PLUGIN_ROOT}/scripts/oil_codex_title.py\" workspace-request"
+          }
+        ]
+      }
+    ],
     "Stop": [
       {
         "hooks": [

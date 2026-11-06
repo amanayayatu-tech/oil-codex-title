@@ -212,13 +212,12 @@ class TitleTests(unittest.TestCase):
             {"type": "userMessage", "content": [{"type": "text", "text": "你好"}]},
             {"type": "agentMessage", "phase": "final_answer", "text": "你好"},
         ]
-        def next_turn(context):
-            self.backend.thread["name"] = "回应中文问候"
-            self.backend.thread["turns"].append({"id": NEW_TURN, "status": "completed", "items": [
-                {"type": "userMessage", "content": [{"type": "text", "text": "查看本地 Skill"}]}
-            ]})
-            return proposal(context)
-        self.assertEqual(self.process(next_turn, apply=True, event_turn=TURN)["status"], "stale_result")
+        self.assertEqual(self.process(lambda _: self.fail("问候不能提前定名"), apply=True,
+                                      event_turn=TURN)["status"], "awaiting_title")
+        self.backend.thread["name"] = "回应中文问候"
+        self.backend.thread["turns"].append({"id": NEW_TURN, "status": "completed", "items": [
+            {"type": "userMessage", "content": [{"type": "text", "text": "查看本地 Skill"}]}
+        ]})
         self.assertEqual(self.process(apply=True, event_turn=NEW_TURN)["status"], "renamed")
 
     def test_recovers_only_legacy_unestablished_automatic_lock(self):
@@ -366,6 +365,17 @@ class TitleTests(unittest.TestCase):
         p = {'action': 'rename', 'title': '🎨 Kite LMS 课程详情页加载优化', 'reason': ''}
         self.assertEqual(normalize_project_prefix(p, {'project_hint':'kite-lms'})['title'], '🎨 课程详情页加载优化')
         self.assertEqual(normalize_project_prefix(p, {'project_hint':''}), p)
+
+    def test_user_mentioned_project_name_stays_in_title(self):
+        candidate = {'action':'rename','title':'📈 Pine 估值｜费用复核','reason':''}
+        contexts = (
+            {'project_hint':'pine','original_goal':'研究 Pine 公司估值和费用。'},
+            {'project_hint':'pine','original_goal':'研究公司估值。','recent_turns':[{'messages':[
+                {'role':'user','text':'继续分析 Pine 的现金流和估值。'}]}]},
+        )
+        for context in contexts:
+            with self.subTest(context=context):
+                self.assertEqual(normalize_project_prefix(candidate, context), candidate)
 
     def test_subproject_and_content_names_are_preserved(self):
         for hint, text in [('commerce-suite','🛠️ seller-console 订单导出修复'),

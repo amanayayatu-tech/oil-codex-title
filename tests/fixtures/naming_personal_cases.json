@@ -1,0 +1,158 @@
+[
+  {
+    "id": "话题命名分类工具",
+    "context": {
+      "current_title": "讨论事情",
+      "project_hint": "",
+      "original_goal": "完善 DemoTagger，按主题生成话题名称并分类整理。",
+      "recent_turns": [
+        {
+          "id": "1",
+          "messages": [
+            {
+              "role": "user",
+              "text": "完善 DemoTagger，按主题生成话题名称并分类整理。"
+            }
+          ]
+        }
+      ]
+    },
+    "expected": {
+      "action": "rename",
+      "contains": ["DemoTagger", "分类"],
+      "reject": [],
+      "emoji": "🏷️",
+      "object_contains": ["DemoTagger"]
+    }
+  },
+  {
+    "id": "录音转写整理",
+    "context": {
+      "current_title": "讨论事情",
+      "project_hint": "",
+      "original_goal": "整理 DemoRecorder 的音频录音转写和分段归档流程。",
+      "recent_turns": [
+        {
+          "id": "1",
+          "messages": [
+            {
+              "role": "user",
+              "text": "整理 DemoRecorder 的音频录音转写和分段归档流程。"
+            }
+          ]
+        }
+      ]
+    },
+    "expected": {
+      "action": "rename",
+      "contains": ["DemoRecorder", "转写"],
+      "reject": [],
+      "emoji": "🎙️",
+      "object_contains": ["DemoRecorder"]
+    }
+  },
+  {
+    "id": "投资金融研究",
+    "context": {
+      "current_title": "讨论事情",
+      "project_hint": "",
+      "original_goal": "研究 Example Holdings 的现金流和估值，为投资判断提供依据。",
+      "recent_turns": [
+        {
+          "id": "1",
+          "messages": [
+            {
+              "role": "user",
+              "text": "研究 Example Holdings 的现金流和估值，为投资判断提供依据。"
+            }
+          ]
+        }
+      ]
+    },
+    "expected": {
+      "action": "rename",
+      "contains": ["Example Holdings", "估值"],
+      "reject": [],
+      "emoji": "📈",
+      "object_contains": ["Example Holdings"]
+    }
+  },
+  {
+    "id": "网络路由代理",
+    "context": {
+      "current_title": "讨论事情",
+      "project_hint": "",
+      "original_goal": "为 DemoRoute 配置代理路由，并排查节点切换故障。",
+      "recent_turns": [
+        {
+          "id": "1",
+          "messages": [
+            {
+              "role": "user",
+              "text": "为 DemoRoute 配置代理路由，并排查节点切换故障。"
+            }
+          ]
+        }
+      ]
+    },
+    "expected": {
+      "action": "rename",
+      "contains": ["DemoRoute", "代理路由"],
+      "reject": [],
+      "emoji": "🌐",
+      "object_contains": ["DemoRoute"]
+    }
+  },
+  {
+    "id": "签到积分领取",
+    "context": {
+      "current_title": "讨论事情",
+      "project_hint": "",
+      "original_goal": "整理 Example Rewards 的每日签到和积分领取流程。",
+      "recent_turns": [
+        {
+          "id": "1",
+          "messages": [
+            {
+              "role": "user",
+              "text": "整理 Example Rewards 的每日签到和积分领取流程。"
+            }
+          ]
+        }
+      ]
+    },
+    "expected": {
+      "action": "rename",
+      "contains": ["Example Rewards", "签到", "积分"],
+      "reject": [],
+      "emoji": "🎁",
+      "object_contains": ["Example Rewards"]
+    }
+  },
+  {
+    "id": "专项标题准确时保持",
+    "context": {
+      "current_title": "🎙️ DemoRecorder｜录音转写整理",
+      "project_hint": "",
+      "original_goal": "完善 DemoRecorder 的录音转写整理流程。",
+      "recent_turns": [
+        {
+          "id": "1",
+          "messages": [
+            {
+              "role": "user",
+              "text": "为 DemoRecorder 补充转写分段边界检查，继续完善现有录音整理流程。"
+            }
+          ]
+        }
+      ]
+    },
+    "expected": {
+      "action": "keep",
+      "contains": ["DemoRecorder", "录音转写"],
+      "reject": [],
+      "emoji": "🎙️",
+      "exact_title": "🎙️ DemoRecorder｜录音转写整理"
+    }
+  }
+]

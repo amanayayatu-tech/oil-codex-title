@@ -15,6 +15,9 @@ import threading
 import time
 from usage_ledger import begin_attempt, parse_usage
 
+EMOJI = ("🎬", "🧩", "🔎", "📝", "📅", "🎨", "⚙️", "💬",
+         "🏷️", "🎙️", "📈", "🌐", "🎁")
+
 
 class BackendError(RuntimeError):
     pass
@@ -104,7 +107,7 @@ class CodexBackend:
         threading.Thread(target=self._reader, daemon=True).start()
         try:
             self.call("initialize", {
-                "clientInfo": {"name": "oil-codex-title", "version": "0.1.0"},
+                "clientInfo": {"name": "oil-codex-title", "version": "0.2.0-personal.1"},
                 "capabilities": {"experimentalApi": True},
             })
             self._send({"method": "initialized"})
@@ -210,10 +213,19 @@ def normalize_project_prefix(candidate, context):
     if candidate.get("action") != "rename" or not hint or " " not in candidate.get("title", ""):
         return candidate
     emoji, body = candidate["title"].split(" ", 1)
+    hint_pattern = r"[\s._-]*".join(re.escape(c) for c in hint)
     # 兼容 kite-lms、Kite LMS、KiteLMS，不把 Maple 错当成 MaplePay。
-    pattern = r"^" + r"[\s._-]*".join(re.escape(c) for c in hint) + r"\s+(.+)$"
+    pattern = r"^" + hint_pattern + r"\s+(.+)$"
     match = re.match(pattern, body, re.IGNORECASE)
     if not match:
+        return candidate
+    # 用户明确提及同名项目时，它是内容对象，不是仅由目录暗示的重复前缀。
+    user_texts = [context.get("original_goal", "")] + [
+        message.get("text", "") for turn in context.get("recent_turns", [])
+        for message in turn.get("messages", []) if message.get("role") == "user"
+    ]
+    mentioned = r"(?<![A-Za-z0-9])" + hint_pattern + r"(?![A-Za-z0-9])"
+    if any(re.search(mentioned, text, re.IGNORECASE) for text in user_texts):
         return candidate
     remaining = match.group(1).strip()
     if len(remaining) < 2 or re.match(r"^(与|和|到|及|→|->|vs\b|to\b)", remaining, re.IGNORECASE):
@@ -221,14 +233,18 @@ def normalize_project_prefix(candidate, context):
     return {**candidate, "title": emoji + " " + remaining}
 
 
-def _generate_title_once(binary, config, context, plugin_root, *, before_model=None):
-    # 只有问候/确认时没有命名证据；确定性保留，避免模型凭空生成“普通讨论”。
+def has_naming_goal(context):
     trivial = {"", "你好", "您好", "hi", "hello", "嗨", "谢谢", "好的", "好", "ok", "收到", "继续", "嗯"}
     user_texts = [context.get("original_goal", "")] + [
         message.get("text", "") for turn in context.get("recent_turns", [])
         for message in turn.get("messages", []) if message.get("role") == "user"
     ]
-    if all(re.sub(r"[\W_]+", "", text).casefold() in trivial for text in user_texts):
+    return not all(re.sub(r"[\W_]+", "", text).casefold() in trivial for text in user_texts)
+
+
+def _generate_title_once(binary, config, context, plugin_root, *, before_model=None):
+    # 只有问候/确认时没有命名证据；确定性保留，避免模型凭空生成“普通讨论”。
+    if not has_naming_goal(context):
         return {"action": "keep", "title": context.get("current_title", ""),
                 "reason": "只有问候或确认，缺少新的命名依据"}, {}
     result, usage = generate_json(binary, config, context, plugin_root / "prompts/naming.md", SCHEMA,
@@ -299,7 +315,7 @@ def generate_title(binary, config, context, plugin_root, *, before_model=None):
     deadline = time.monotonic() + config.get("model_timeout_seconds", 100)
     candidate, usage = _generate_title_once(binary, config, context, plugin_root, before_model=before_model)
     current = context.get("current_title", "")
-    legacy = current.count("｜") != 1 or current.startswith("🛠")
+    legacy = current.count("｜") != 1 or not any(current.startswith(emoji + " ") for emoji in EMOJI)
     # 模型偶尔误把旧标题判断为结构合规。只复核一次，不自行猜对象或强制改名。
     # 问候过滤不调用模型且无 usage，仍然直接保留。
     remaining = deadline - time.monotonic()

@@ -1,0 +1,108 @@
+{
+  "model": "gpt-5.6-luna",
+  "service_tier": "priority",
+  "cases": 6,
+  "passed": 6,
+  "model_cases": 6,
+  "median_seconds": 13.12,
+  "notice": "DEVELOPMENT：6 个合成案例的一次实测，不代表普遍准确率，不验证宿主自然触发或桌面显示。",
+  "results": [
+    {
+      "case": "话题命名分类工具",
+      "action": "rename",
+      "title": "🏷️ DemoTagger｜生成话题名称并分类整理",
+      "reason": "原标题过于泛化，需突出工具对象与持续目标",
+      "passed": true,
+      "errors": [],
+      "seconds": 12.57,
+      "usage": {
+        "input_tokens": 8501,
+        "cached_input_tokens": 3456,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 48,
+        "reasoning_output_tokens": 0
+      }
+    },
+    {
+      "case": "录音转写整理",
+      "action": "rename",
+      "title": "🎙️ DemoRecorder｜录音转写与分段归档",
+      "reason": "原标题过于泛化，需突出具体工具和持续目标",
+      "passed": true,
+      "errors": [],
+      "seconds": 11.36,
+      "usage": {
+        "input_tokens": 8503,
+        "cached_input_tokens": 0,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 49,
+        "reasoning_output_tokens": 0
+      }
+    },
+    {
+      "case": "投资金融研究",
+      "action": "rename",
+      "title": "📈 Example Holdings｜现金流估值研究",
+      "reason": "明确公司对象及投资研究目标",
+      "passed": true,
+      "errors": [],
+      "seconds": 14.61,
+      "usage": {
+        "input_tokens": 8499,
+        "cached_input_tokens": 3456,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 100,
+        "reasoning_output_tokens": 60
+      }
+    },
+    {
+      "case": "网络路由代理",
+      "action": "rename",
+      "title": "🌐 DemoRoute｜代理路由与节点切换",
+      "reason": "原标题泛化，需明确路由配置与故障排查主线",
+      "passed": true,
+      "errors": [],
+      "seconds": 8.47,
+      "usage": {
+        "input_tokens": 8507,
+        "cached_input_tokens": 5760,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 49,
+        "reasoning_output_tokens": 0
+      }
+    },
+    {
+      "case": "签到积分领取",
+      "action": "rename",
+      "title": "🎁 Example Rewards｜签到领取积分",
+      "reason": "原标题过于笼统，需突出具体对象与持续目标",
+      "passed": true,
+      "errors": [],
+      "seconds": 25.3,
+      "usage": {
+        "input_tokens": 8491,
+        "cached_input_tokens": 3456,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 43,
+        "reasoning_output_tokens": 0
+      }
+    },
+    {
+      "case": "专项标题准确时保持",
+      "action": "keep",
+      "title": "🎙️ DemoRecorder｜录音转写整理",
+      "reason": "原标题准确覆盖现有录音整理主线",
+      "passed": true,
+      "errors": [],
+      "seconds": 13.66,
+      "usage": {
+        "input_tokens": 8512,
+        "cached_input_tokens": 3456,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 86,
+        "reasoning_output_tokens": 42
+      }
+    }
+  ],
+  "environment": "DEVELOPMENT"
+}
