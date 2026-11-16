@@ -107,7 +107,7 @@ class CodexBackend:
         threading.Thread(target=self._reader, daemon=True).start()
         try:
             self.call("initialize", {
-                "clientInfo": {"name": "oil-codex-title", "version": "0.2.0-personal.2"},
+                "clientInfo": {"name": "oil-codex-title", "version": "0.2.0-personal.3"},
                 "capabilities": {"experimentalApi": True},
             })
             self._send({"method": "initialized"})
@@ -156,7 +156,7 @@ class CodexBackend:
     def rename(self, thread_id, title):
         return self.call("thread/name/set", {"threadId": thread_id, "name": title})
 
-    def list_threads(self, *, archived=False, cwd=None):
+    def list_threads(self, *, archived=False, cwd=None, state_db_only=False):
         """分页读取官方列表，不将归档话题或遗漏页混入候选。"""
         params = {"archived": archived, "limit": 100, "sourceKinds": ["cli", "vscode", "appServer", "exec"],
                   "modelProviders": []}
@@ -165,6 +165,8 @@ class CodexBackend:
                                       "subAgentThreadSpawn", "subAgentOther"]
         if cwd:
             params["cwd"] = cwd
+        if state_db_only:
+            params["useStateDbOnly"] = True
         seen, cursors = set(), set()
         while True:
             page = self.call("thread/list", params)
@@ -180,8 +182,9 @@ class CodexBackend:
             cursors.add(cursor)
             params["cursor"] = cursor
 
-    def is_archived(self, thread_id, cwd=None):
-        return any(t["id"] == thread_id for t in self.list_threads(archived=True, cwd=cwd))
+    def is_archived(self, thread_id, cwd=None, *, state_db_only=False):
+        return any(t["id"] == thread_id for t in self.list_threads(
+            archived=True, cwd=cwd, state_db_only=state_db_only))
 
     def __exit__(self, *_):
         if self.proc is None:

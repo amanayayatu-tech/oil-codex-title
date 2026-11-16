@@ -226,6 +226,22 @@ class ArchiveTests(unittest.TestCase):
         self.assertEqual(len(calls), 2)
         self.assertTrue(all(c["archived"] for c in calls))
 
+    def test_index_archive_lookup_uses_official_state_db_filter(self):
+        b = CodexBackend("unused")
+        calls = []
+        def call(method, params):
+            calls.append((method, dict(params)))
+            return {"data": [{"id": ID}], "nextCursor": None}
+        b.call = call
+        self.assertTrue(b.is_archived(ID, state_db_only=True))
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][0], "thread/list")
+        self.assertTrue(calls[0][1]["useStateDbOnly"])
+        calls.clear()
+        self.assertTrue(b.is_archived(ID, "/sample"))
+        self.assertEqual(calls[0][1]["cwd"], "/sample")
+        self.assertNotIn("useStateDbOnly", calls[0][1])
+
     def test_pending_work_in_middle_and_tail_is_not_truncated(self):
         text = "界面已交付。" + "检查通过。" * 110 + "待办：实现邮件发送。" + "布局说明。" * 100 + "待办：上线验收。"
         self.backend.thread["turns"][0]["items"][-1]["text"] = text

@@ -311,8 +311,9 @@ def limited_title(binary, root, config, context, *, before_model=None):
                               before_model=before_model)
 
 
-def ensure_title_active(backend, thread_id, root):
-    if backend.is_archived(thread_id):
+def ensure_title_active(backend, thread_id, root, *, state_db_only=False):
+    cwd = None if state_db_only else backend.read(thread_id).get("cwd")
+    if backend.is_archived(thread_id, cwd, state_db_only=state_db_only):
         raise ModelSkipped("archived")
     if not load_config(root)["enabled"]:
         raise ModelSkipped("disabled")
@@ -553,7 +554,8 @@ def _process_thread(backend, generator, thread_id, root, config, *, apply=False,
         state = read_json(path)
         if event_turn and auto_title_finalized(state):
             return {"status": "frozen"}
-        if backend.is_archived(thread_id):
+        # shortcut: 状态库可能漏掉未修复的旧归档记录；若宿主提供按 ID 查询则换用，写入前仍完整复核。
+        if backend.is_archived(thread_id, state_db_only=bool(event_turn)):
             return {"status": "archived"}
         if event_turn:
             thread, pending = read_settled_thread(backend, thread_id, event_turn)
@@ -605,7 +607,7 @@ def _process_thread(backend, generator, thread_id, root, config, *, apply=False,
             return {"status": "unchanged", "title": before["title"]}
         skipped = confirmation_only(thread, state, config)
         try:
-            ensure_title_active(backend, thread_id, root)
+            ensure_title_active(backend, thread_id, root, state_db_only=True)
             if skipped or same_content:
                 candidate, usage = {"action": "keep", "title": before["context"]["current_title"],
                                     "reason": "新增内容仅为确认或工作区变化，保留稳定标题"}, {}
@@ -647,9 +649,9 @@ def _process_thread(backend, generator, thread_id, root, config, *, apply=False,
         latest_state = read_json(path)
         if latest_state.get("locked"):
             return {"status": "locked"}
-        if backend.is_archived(thread_id):
-            return {"status": "archived"}
         after_thread = backend.read(thread_id)
+        if backend.is_archived(thread_id, after_thread.get("cwd")):
+            return {"status": "archived"}
         after = snapshot(after_thread, config)
         if after["title"] != before["title"] or after["fingerprint"] != before["fingerprint"]:
             return {"status": "stale_result"}

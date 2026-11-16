@@ -34,8 +34,13 @@ class FakeBackend:
         self.writes = []
         self.raise_after_write = False
         self.archived = False
+        self.index_archived = None
+        self.archive_probes = []
 
-    def is_archived(self, thread_id, cwd=None):
+    def is_archived(self, thread_id, cwd=None, *, state_db_only=False):
+        self.archive_probes.append((cwd, state_db_only))
+        if state_db_only and self.index_archived is not None:
+            return self.index_archived
         return self.archived
 
     def read(self, thread_id):
@@ -99,6 +104,17 @@ class TitleTests(unittest.TestCase):
         self.assertEqual(self.process(moved, apply=True)["status"], "archived")
         self.assertEqual(self.backend.writes, [])
 
+    def test_full_archive_check_prevents_model_when_index_lags(self):
+        self.backend.index_archived = False
+        self.backend.archived = True
+        self.backend.thread["cwd"] = "/sample"
+        def model(_):
+            title.ensure_title_active(self.backend, ID, self.root)
+            self.fail("归档话题不能调用模型")
+        self.assertEqual(self.process(model, apply=True, event_turn=TURN)["status"], "archived")
+        self.assertEqual(self.backend.archive_probes[-1], ("/sample", False))
+        self.assertEqual(self.backend.writes, [])
+
     def test_archive_or_pause_prevents_collision_retry(self):
         from unittest.mock import Mock
         for change in ("archive", "pause"):
@@ -160,7 +176,7 @@ class TitleTests(unittest.TestCase):
 
     def test_pause_during_slow_archive_probe_never_starts_model(self):
         from unittest.mock import patch
-        def probe(*args):
+        def probe(*args, **kwargs):
             title.atomic_json(self.root / "config.json", {"enabled": False})
             return False
         with patch.object(self.backend, "is_archived", side_effect=probe), patch("codex_adapter.subprocess.run") as run:

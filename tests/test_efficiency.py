@@ -50,6 +50,15 @@ class EfficiencyTests(unittest.TestCase):
         output.write_text(json.dumps(self.candidate), encoding='utf-8')
         return SimpleNamespace(returncode=0, stdout=json.dumps({'type': 'turn.completed', 'usage': USAGE}))
 
+    def test_naming_uses_index_before_model_and_full_check_before_write(self):
+        self.backend.thread['cwd'] = '/sample'
+        with patch('codex_adapter.subprocess.run', side_effect=self.fake_run):
+            self.assertEqual(self.process(self.actual_model, event_turn=fixtures.TURN)['status'], 'renamed')
+        self.assertGreaterEqual(len(self.backend.archive_probes), 3)
+        self.assertTrue(all(indexed for _, indexed in self.backend.archive_probes[:2]))
+        self.assertEqual(self.backend.archive_probes[-2], ('/sample', False))
+        self.assertEqual(self.backend.archive_probes[-1], ('/sample', False))
+
     def records(self):
         return [json.loads(p.read_text(encoding='utf-8')) for p in (self.root / 'usage').glob('*/*.json')]
 
