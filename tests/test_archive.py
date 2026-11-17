@@ -163,6 +163,51 @@ class ArchiveTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.scan()
 
+    def test_project_automation_is_protected_by_host_link_and_resolved_cwd(self):
+        atomic_json(self.root / "archive/config.json",
+                    {"enabled": True, "completed_days": 30, "inactive_days": 30})
+        self.backend.thread["turns"][0]["completedAt"] = time.time() - 31 * archive.DAY
+        self.assertEqual(len(self.scan()["candidates"]), 1)
+        path = self.root / "codex/automations/example/automation.toml"
+        path.parent.mkdir(parents=True)
+        cwd = self.root / "project with spaces"
+        (cwd / "child").mkdir(parents=True)
+        path.write_text(
+            'kind = "cron"\nstatus = "ACTIVE"\n'
+            'target = { type = "project", project_id = "local-project" }\n'
+            f'cwds = {json.dumps([str(cwd / "child" / "..")])}\n', encoding="utf-8")
+        host = {**self.host, "threads": [{"id": ID, "hostId": "local", "kind": "codex",
+                                        "status": "idle", "projectId": "local-project"}]}
+        for parser in (archive.tomllib, None):
+            with self.subTest(native_toml=parser is not None), patch.object(archive, "tomllib", parser):
+                self.backend.thread.update(cwd=str(self.root), projectId=None)
+                archive.save_guards(self.root, host)
+                self.assertEqual(self.scan()["counts"]["protected"], 1)
+                self.assertEqual(archive.check(self.backend, self.root, ID)["status"], "protected")
+
+                # 超出宿主近期列表的记录，仍能用归档读链路里的真实目录保护。
+                archive.save_guards(self.root, self.host)
+                self.backend.thread["cwd"] = str(cwd)
+                self.assertEqual(self.scan()["counts"]["protected"], 1)
+                self.assertEqual(archive.check(self.backend, self.root, ID)["status"], "protected")
+
+        # 未关联项目的自动化工作树先保留，外部普通话题仍可用已有评估。
+        self.backend.thread.update(cwd=str(self.root), threadSource="automation")
+        self.assertEqual(self.scan()["counts"]["protected"], 1)
+        self.backend.thread.pop("threadSource")
+        self.assertEqual(len(self.scan()["candidates"]), 1)
+        self.assertEqual(self.calls, 1)
+
+    def test_automation_prompt_is_not_scope_metadata(self):
+        path = self.root / "codex/automations/example/automation.toml"
+        path.parent.mkdir(parents=True)
+        path.write_text('prompt = """\nstatus = "PAUSED"\n"""\nstatus = "ACTIVE"\n',
+                        encoding="utf-8")
+        for parser in (archive.tomllib, None):
+            with self.subTest(native_toml=parser is not None), patch.object(archive, "tomllib", parser):
+                with self.assertRaisesRegex(ValueError, "停止归档扫描"):
+                    archive.save_guards(self.root, self.host)
+
     def test_open_and_uncertain_are_not_reassessed_daily(self):
         for category in ("open", "uncertain"):
             atomic_json(archive.record_path(self.root, ID), {})

@@ -11,6 +11,11 @@ import re
 import sys
 import time
 
+try:
+    import tomllib
+except ModuleNotFoundError:  # Python 3.10
+    tomllib = None
+
 from usage_ledger import usage_scope
 from codex_adapter import BackendError, ModelSkipped, CodexBackend, find_codex, generate_json
 from oil_codex_title import (ROOT, atomic_json, data_dir, load_config, read_json,
@@ -41,29 +46,69 @@ def record_path(root, tid):
     return root / "archive/threads" / (valid_id(tid) + ".json")
 
 
+def automation_metadata(raw):
+    if tomllib is not None:
+        return tomllib.loads(raw)
+    # shortcut: Python 3.10 接受宿主生成的单行字段；遇到其他 TOML 写法时停止。
+    metadata = {}
+    for line in raw.split("\n"):
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        key, sep, value = line.partition("=")
+        key, value = key.strip(), value.strip()
+        if not sep or not re.fullmatch(r"[A-Za-z0-9_-]+", key) or key in metadata:
+            raise ValueError("自动任务字段格式无法识别")
+        if key == "target":
+            match = re.fullmatch(r'\{\s*type\s*=\s*"project"\s*,\s*project_id\s*=\s*"([a-zA-Z0-9_-]+)"\s*\}', value)
+            metadata[key] = {"type": "project", "project_id": match[1]} if match else {}
+        else:
+            metadata[key] = json.loads(value)
+    return metadata
+
+
+def automation_cwd(value):
+    if isinstance(value, str) and os.path.isabs(value):
+        return os.path.normcase(os.path.realpath(value))
+    return None
+
+
 def automation_protection():
     """只读宿主管理的自动任务。无法识别活动任务的作用域时停止，避免漏保护。"""
     home = Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex")))
-    ids, projects = set(), set()
+    ids, projects, cwds = set(), set(), set()
     for path in (home / "automations").glob("*/automation.toml"):
-        raw = path.read_text(encoding="utf-8")
-        # 宿主生成的顶层简单字符串；不解析、不执行 prompt 或任意 TOML 内容。
-        def field(key):
-            match = re.search(r'^' + re.escape(key) + r'\s*=\s*("[^"\n]*")\s*$', raw, re.M)
-            return json.loads(match[1]) if match else None
-        status = field("status")
+        try:
+            metadata = automation_metadata(path.read_text(encoding="utf-8"))
+        except ValueError as exc:
+            raise ValueError("自动任务配置无法识别，停止归档扫描：" + path.parent.name) from exc
+        status = metadata.get("status")
         if status in ("PAUSED", "COMPLETED"):
             continue
         if status != "ACTIVE":
-            raise ValueError("无法识别自动任务状态，停止归档扫描")
-        tid, project = field("target_thread_id"), field("project_id")
-        if tid:
+            raise ValueError("无法识别自动任务状态，停止归档扫描：" + path.parent.name)
+        unknown_scope = "活动自动任务缺少可验证作用域，停止归档扫描：" + path.parent.name
+        tid, project = metadata.get("target_thread_id"), metadata.get("project_id")
+        if "target" in metadata:
+            target = metadata["target"]
+            if not isinstance(target, dict) or target.get("type") != "project" or tid is not None:
+                raise ValueError(unknown_scope)
+            if project not in (None, target.get("project_id")):
+                raise ValueError(unknown_scope)
+            project = target.get("project_id")
+        if isinstance(tid, str) and tid and project is None:
             ids.add(valid_id(tid))
-        elif project:
+        elif tid is None and isinstance(project, str) and project.strip():
+            paths = metadata.get("cwds", [])
+            if not isinstance(paths, list):
+                raise ValueError(unknown_scope)
+            normalized = {automation_cwd(value) for value in paths}
+            if None in normalized:
+                raise ValueError(unknown_scope)
             projects.add(project)
+            cwds.update(normalized)
         else:
-            raise ValueError("活动自动任务缺少可验证作用域，停止归档扫描")
-    return ids, projects
+            raise ValueError(unknown_scope)
+    return ids, projects, cwds
 
 
 def save_guards(root, host, current_id=None):
@@ -72,11 +117,12 @@ def save_guards(root, host, current_id=None):
         raise ValueError("需要宿主 list_threads 的完整 JSON")
     if host.get("unavailableHosts") or host.get("unavailableSources"):
         raise ValueError("宿主列表不完整，停止归档扫描")
-    protected, projects = automation_protection()
+    protected, projects, cwds = automation_protection()
     for item in host["pinnedThreads"] + host["threads"]:
         if item.get("hostId") != "local" or item.get("kind") != "codex":
             continue
-        if item in host["pinnedThreads"] or item.get("status") not in ("idle", "notLoaded"):
+        if (item in host["pinnedThreads"] or item.get("status") not in ("idle", "notLoaded")
+                or item.get("projectId") in projects):
             protected.add(valid_id(item["id"]))
     # 用户放进自定义分区的单独话题视为主动整理，保守保留。
     for section in host.get("sections", []):
@@ -88,7 +134,7 @@ def save_guards(root, host, current_id=None):
     if current_id:
         protected.add(valid_id(current_id))
     value = {"created_at": time.time(), "protected_ids": sorted(protected),
-             "protected_projects": sorted(projects)}
+             "protected_projects": sorted(projects), "protected_cwds": sorted(cwds)}
     atomic_json(root / "archive/guards.json", value)
     return {"status": "guards_saved", "protected_count": len(protected)}
 
@@ -99,8 +145,9 @@ def guards(root, now):
     if not 0 <= age <= 300:
         raise ValueError("保护名单缺失或超过 5 分钟；先重新读取宿主 list_threads 并保存 guards")
     # 在每次扫描和执行前再次检查自动任务，不能只信任之前的名单。
-    ids, projects = automation_protection()
-    return set(value["protected_ids"]) | ids, set(value["protected_projects"]) | projects
+    ids, projects, cwds = automation_protection()
+    return (set(value["protected_ids"]) | ids, set(value["protected_projects"]) | projects,
+            set(value.get("protected_cwds", [])) | cwds)
 
 
 def archive_context(thread):
@@ -152,8 +199,14 @@ def activity(thread):
 
 
 def protected(thread, tid, cfg, guard, root):
-    ids, projects = guard
-    if tid in ids or tid in cfg["protected_ids"] or thread.get("projectId") in projects:
+    ids, projects, cwds = guard
+    project = thread.get("projectId")
+    if tid in ids or tid in cfg["protected_ids"] or project in projects:
+        return True
+    if cwds and automation_cwd(thread.get("cwd")) in cwds:
+        return True
+    # 工作树可能不在项目目录内；归属无法核对的自动任务运行记录先保留。
+    if projects and not project and thread.get("threadSource") == "automation":
         return True
     if thread.get("ephemeral") or thread.get("parentThreadId"):
         return True
